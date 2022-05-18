@@ -17,14 +17,22 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <sys/mman.h>
-#include "StackOverLinkedList.h"
+
 
 #define PORT "3490" // the port users will be connecting to
 
 #define BACKLOG 10 // how many pending connections queue will hold
 
-int fd;
-struct flock lock;
+// Structure to create a Stack
+struct Stack
+{
+    char data[1024];
+    int index;
+};
+
+int fd; //file descriptor for the test file
+struct flock lock; //lock for multi process connections
+Stack * stack; //the stack
 
 void sigchld_handler(int s)
 {
@@ -63,53 +71,58 @@ void *myProccessFun(void *vargp)
         } 
 
         data[Bytes] = '\0';
-        if (strncmp(data, "EXIT", 4) == 0){
+        if (strncmp(data, "EXIT", 4) == 0){ //closing the connection with the client
             printf("DEBUG: Closed connection with fd: %d\n", new_fd);
             break;
         }
 
-        lock.l_type = F_WRLCK;
+        lock.l_type = F_WRLCK; //locking the lock
         fcntl(fd, F_SETLKW, &lock);
 
-        if (strncmp(data, "PUSH", 4) == 0)
+        if (strncmp(data, "PUSH", 4) == 0) //pushing the data to the stack
         {
-            char *pointerData = data + 5;
-            push(pointerData);
-            printf("DEBUG: Pushed -> %s", pointerData);
+            memcpy(data, data + 5, 1024 - 5);
+            strcpy(stack[stack->index++].data, data);
+            printf("DEBUG: Pushed -> %s", data);
         }
-        else if (strncmp(data, "POP", 3) == 0)
-        {
-            char *pointerData = pop();
-            if(pointerData == NULL){
+        else if (strncmp(data, "POP", 3) == 0) //popping the head of the stack
+        {           
+            char * pop = stack[stack->index - 1].data;
+
+            if (strncmp(pop, "NULL", 3) == 0)
+            {
                 printf("ERROR: Stack Underflow\n");
-                lock.l_type = F_UNLCK;
+                lock.l_type = F_UNLCK; //unlocking the lock in case of underflow
                 fcntl (fd, F_SETLKW, &lock);
                 continue;
             }
-            printf("DEBUG: Popped -> %s", pointerData);
+            printf("DEBUG: Popped -> %s", pop);
+            strcpy(stack[stack->index--].data, "");
         }
-        else if (strncmp(data, "TOP",3) == 0)
+        else if (strncmp(data, "TOP",3) == 0) //showing the head of the stack
         {
-            char *pointerData = top();
+            char * top = stack[stack->index - 1].data;
 
-            if(pointerData == NULL){
+            if (strncmp(top, "NULL", 3) == 0)
+            {
                 printf("ERROR: Stack Underflow\n");
-                lock.l_type = F_UNLCK;
+                if (send(new_fd, "ERROR: Stack Underflow\n", strlen("ERROR: Stack Underflow\n"), 0) == -1){
+                    perror("send");
+                }
+                lock.l_type = F_UNLCK; //unlocking the lock in case of underflow
                 fcntl (fd, F_SETLKW, &lock);
                 continue;
             }
-
             char out[1024];
             bzero(out, 1024);
             strcat(out, "OUTPUT: ");
-            strcat(out, pointerData);
+            strcat(out, top);
             printf("%s", out);
             if (send(new_fd, out, strlen(out), 0) == -1){
                 perror("send");
             }
         }
-
-        lock.l_type = F_UNLCK;
+        lock.l_type = F_UNLCK; //unlocking the lock
         fcntl (fd, F_SETLKW, &lock);
     }
 
@@ -120,19 +133,20 @@ void *myProccessFun(void *vargp)
 
 int main(void)
 {
-    fd = open("test.txt", O_WRONLY);
+    fd = open("test.txt", O_WRONLY); //opening a test file
     if (fd == -1)
     {
         perror("DEBUG: Test file creation");
     }
-    memset(&lock, 0, sizeof(lock));
+    memset(&lock, 0, sizeof(lock)); //initializing the lock
 
-    Node *stack = (Node *)mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    stack = (Stack *)mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0); //creating a shared memory stack
     if (stack == MAP_FAILED)
     {
-        printf("DEBUG: Mapping Failed\n");
+        printf("DEBUG: Mapping Failed - stack\n");
         return 1;
     }
+    strcpy(stack[stack->index++].data, "NULL");
     int sockfd, new_fd; // listen on sock_fd, new connection on new_fd
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage their_addr; // connector's address information
@@ -204,7 +218,6 @@ int main(void)
     }
 
     printf("DEBUG: waiting for connections...\n");
-    int counter = 0;
     while(1) {  // main accept() loop
         sin_size = sizeof their_addr;
         new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
@@ -220,8 +233,7 @@ int main(void)
 
         if (!fork()) { // this is the child process
             close(sockfd); // child doesn't need the listener
-            counter++;
-            myProccessFun(&new_fd);
+            myProccessFun(&new_fd); // call the function to handle the connection
             close(new_fd);
             exit(0);
         }

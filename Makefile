@@ -1,13 +1,13 @@
 CC=g++
 AR=ar
-FLAGS= -Wall -g
+FLAGS= -Wall -g3
 
 all: client server
 
-client: client.o StackOverLinkedList.h
+client: client.o
 	$(CC) $(FLAGS) -o client client.o
 
-server:  server.o StackOverLinkedList.h
+server:  server.o
 	$(CC) $(FLAGS) -o server server.o
 
 server.o: server.cpp
